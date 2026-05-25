@@ -8,7 +8,7 @@ using X = System.Linq.Expressions.Expression;
 
 namespace Enyim;
 
-public class Inverter
+public class Inverter : IWiring
 {
 	private readonly Dictionary<Type, Registration> registrations = new();
 
@@ -349,6 +349,28 @@ public class Inverter
 			};
 		}
 	}
+}
+
+public interface IWiring
+{
+	void Add<TService, TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService;
+	void Add<TService>(Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
+	void Add<TService>(Func<IServiceProvider, TService> resolver, Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
+	void Add<TService>(TService instance) where TService : class;
+	void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService;
+	void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3>(Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService;
+	void AutoWire<TService, TImplementation, TArg1, TArg2>(Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService;
+	void AutoWire<TService, TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService;
 }
 
 public enum Lifecycle { Singleton = 0, Transient = 1 };
