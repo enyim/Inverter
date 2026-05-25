@@ -11,11 +11,18 @@ namespace Enyim;
 
 public class Inverter : IWiring
 {
-	private readonly Dictionary<Type, Registration> registrations = new();
+	private readonly Dictionary<Type, List<Registration>> registrations = new();
+
+	private void Register(Type serviceType, Registration registration)
+	{
+		if (!registrations.TryGetValue(serviceType, out var list))
+			registrations[serviceType] = list = [];
+		list.Add(registration);
+	}
 
 	public IServiceProvider Build()
 	{
-		var snapshot = registrations.ToFrozenDictionary(kv => kv.Key, kv => kv.Value.Clone());
+		var snapshot = registrations.ToFrozenDictionary(kv => kv.Key, kv => kv.Value.Select(r => r.Clone()).ToList());
 		return new ServiceProviderImpl(snapshot);
 	}
 
@@ -29,7 +36,7 @@ public class Inverter : IWiring
 		if (!implementationOpenGeneric.IsGenericTypeDefinition)
 			throw new ArgumentException($"{implementationOpenGeneric} is not an open generic type definition", nameof(implementationOpenGeneric));
 
-		registrations[serviceOpenGeneric] = new OpenGenericRegistration(implementationOpenGeneric, lifecycle);
+		Register(serviceOpenGeneric, new OpenGenericRegistration(implementationOpenGeneric, lifecycle));
 	}
 
 	public void Add<TService>(Func<IServiceProvider, TService> resolver, Lifecycle lifecycle = Lifecycle.Transient)
@@ -37,14 +44,14 @@ public class Inverter : IWiring
 	{
 		ArgumentNullException.ThrowIfNull(resolver);
 
-		registrations[typeof(TService)] = new DelegateRegistration<TService>(resolver, lifecycle);
+		Register(typeof(TService), new DelegateRegistration<TService>(resolver, lifecycle));
 	}
 
 	public void Add<TService, TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
-		registrations[typeof(TService)] = new GeneratedRegistration<TService, TImplementation>(lifecycle);
+		Register(typeof(TService), new GeneratedRegistration<TService, TImplementation>(lifecycle));
 	}
 
 	public void Add<TService>(Lifecycle lifecycle = Lifecycle.Transient)
@@ -58,7 +65,7 @@ public class Inverter : IWiring
 	{
 		ArgumentNullException.ThrowIfNull(instance);
 
-		registrations[typeof(TService)] = new InstanceRegistration<TService>(instance);
+		Register(typeof(TService), new InstanceRegistration<TService>(instance));
 	}
 
 	public void AutoWire<TService, TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
@@ -91,16 +98,16 @@ public class Inverter : IWiring
 
 	private void AutoWire<TImplementation, TFunc>(Lifecycle lifecycle)
 	{
-		registrations[typeof(TFunc)] = new OpenArgFuncRegistration<TImplementation, TFunc>(lifecycle);
+		Register(typeof(TFunc), new OpenArgFuncRegistration<TImplementation, TFunc>(lifecycle));
 	}
 
 	private class ServiceProviderImpl : IServiceProvider, IDisposable, IAsyncDisposable
 	{
-		private readonly FrozenDictionary<Type, Registration> registrations;
-		private readonly Dictionary<Type, Registration> closedGenericCache = new();
+		private readonly FrozenDictionary<Type, List<Registration>> registrations;
+		private readonly Dictionary<Type, List<Registration>> closedGenericCache = new();
 		private bool disposed;
 
-		public ServiceProviderImpl(FrozenDictionary<Type, Registration> registrations)
+		public ServiceProviderImpl(FrozenDictionary<Type, List<Registration>> registrations)
 		{
 			this.registrations = registrations;
 		}
@@ -110,22 +117,41 @@ public class Inverter : IWiring
 			ArgumentNullException.ThrowIfNull(serviceType);
 			if (disposed) throw new ObjectDisposedException(nameof(ServiceProviderImpl));
 
-			if (registrations.TryGetValue(serviceType, out var resolver) && resolver is not OpenGenericRegistration)
+			if (Find(serviceType) is { } list)
+				return list[^1].Create(this);
+
+			if (serviceType.IsGenericType && serviceType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
 			{
-				return resolver.Create(this);
+				var elementType = serviceType.GetGenericArguments()[0];
+				if (Find(elementType) is { } elementList)
+				{
+					var array = Array.CreateInstance(elementType, elementList.Count);
+					for (var i = 0; i < elementList.Count; i++)
+						array.SetValue(elementList[i].Create(this), i);
+					return array;
+				}
+				return Array.CreateInstance(elementType, 0);
 			}
 
+			return null;
+		}
+
+		// exact registrations win over the ones closed from an open generic
+		private List<Registration>? Find(Type serviceType)
+		{
+			if (registrations.TryGetValue(serviceType, out var list))
+				return list[^1] is OpenGenericRegistration ? null : list;
+
 			if (serviceType.IsConstructedGenericType
-				&& registrations.TryGetValue(serviceType.GetGenericTypeDefinition(), out var openReg)
-				&& openReg is OpenGenericRegistration open)
+				&& registrations.TryGetValue(serviceType.GetGenericTypeDefinition(), out var openList))
 			{
-				if (!closedGenericCache.TryGetValue(serviceType, out var registration))
+				if (!closedGenericCache.TryGetValue(serviceType, out var closedList))
 				{
-					registration = open.BuildClosed(serviceType);
-					closedGenericCache[serviceType] = registration;
+					closedList = openList.OfType<OpenGenericRegistration>().Select(open => open.BuildClosed(serviceType)).ToList();
+					closedGenericCache[serviceType] = closedList;
 				}
 
-				return registration.Create(this);
+				return closedList;
 			}
 
 			return null;
@@ -136,10 +162,8 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
-			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values))
-			{
+			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values).SelectMany(l => l))
 				reg.Dispose();
-			}
 		}
 
 		public async ValueTask DisposeAsync()
@@ -147,10 +171,8 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
-			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values))
-			{
+			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values).SelectMany(l => l))
 				await reg.DisposeAsync();
-			}
 		}
 	}
 

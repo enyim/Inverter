@@ -364,4 +364,52 @@ public class InverterTests
 
 		Assert.True(instance.Disposed);
 	}
+
+	[Fact]
+	public void ResolveEnumerable_MultipleRegistrations_ReturnsAll()
+	{
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, Alpha>();
+			i.Add<IAlpha, AlphaWithOptional>();
+		});
+
+		var result = (System.Collections.Generic.IEnumerable<IAlpha>)sp.GetService(typeof(System.Collections.Generic.IEnumerable<IAlpha>))!;
+		Assert.Collection(result,
+			x => Assert.IsType<Alpha>(x),
+			x => Assert.IsType<AlphaWithOptional>(x));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_NoneRegistered_ReturnsEmptyArray()
+	{
+		var sp = new Inverter().Build();
+
+		var result = sp.GetService(typeof(System.Collections.Generic.IEnumerable<IAlpha>));
+		Assert.NotNull(result);
+		Assert.Empty((System.Collections.IEnumerable)result);
+	}
+
+	[Fact]
+	public void ResolveEnumerable_ExplicitRegistrationWins()
+	{
+		var explicit_ = new Alpha();
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, AlphaWithOptional>();
+			i.Add<System.Collections.Generic.IEnumerable<IAlpha>>(_ => [explicit_]);
+		});
+
+		var result = (System.Collections.Generic.IEnumerable<IAlpha>)sp.GetService(typeof(System.Collections.Generic.IEnumerable<IAlpha>))!;
+		Assert.Same(explicit_, Assert.Single(result));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_SingleRegistration_ReturnsOneElement()
+	{
+		var sp = Build(i => i.Add<IAlpha, Alpha>());
+
+		var result = (System.Collections.Generic.IEnumerable<IAlpha>)sp.GetService(typeof(System.Collections.Generic.IEnumerable<IAlpha>))!;
+		Assert.IsType<Alpha>(Assert.Single(result));
+	}
 }
