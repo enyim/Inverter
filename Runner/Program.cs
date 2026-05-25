@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Linq.Expressions;
 
+using Enyim;
+
 // See https://aka.ms/new-console-template for more information
 
 var inverter = new Inverter();

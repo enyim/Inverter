@@ -1,14 +1,13 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reflection;
 
 using X = System.Linq.Expressions.Expression;
 
-internal class Inverter
+namespace Enyim;
+
+public class Inverter
 {
 	private readonly Dictionary<Type, Registration> registrations = new();
 

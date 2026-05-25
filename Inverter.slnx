@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Inverter.Tests/Inverter.Tests.csproj" />
+  <Project Path="Inverter/Inverter.csproj" />
+  <Project Path="Runner/Runner.csproj" />
+</Solution>
