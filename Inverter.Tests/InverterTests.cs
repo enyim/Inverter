@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 using Enyim;
 
@@ -29,6 +30,20 @@ public class InverterTests
 	{
 		public bool Disposed { get; private set; }
 		public void Dispose() => Disposed = true;
+	}
+
+	class AsyncDisposableAlpha : IAlpha, IAsyncDisposable
+	{
+		public bool Disposed { get; private set; }
+		public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+	}
+
+	class DualDisposableAlpha : IAlpha, IDisposable, IAsyncDisposable
+	{
+		public bool SyncDisposed { get; private set; }
+		public bool AsyncDisposed { get; private set; }
+		public void Dispose() => SyncDisposed = true;
+		public ValueTask DisposeAsync() { AsyncDisposed = true; return ValueTask.CompletedTask; }
 	}
 
 	class FactoryAlpha : IAlpha
@@ -226,5 +241,60 @@ public class InverterTests
 		var result = Assert.IsType<TwoArgAlpha>(factory(7, "hello"));
 		Assert.Equal(7, result.Id);
 		Assert.Equal("hello", result.Name);
+	}
+
+	[Fact]
+	public async Task AsyncDispose_SingletonIAsyncDisposable_IsDisposed()
+	{
+		var sp = Build(i => i.Add<IAlpha, AsyncDisposableAlpha>(Lifecycle.Singleton));
+		var instance = (AsyncDisposableAlpha)sp.GetService(typeof(IAlpha))!;
+
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.True(instance.Disposed);
+	}
+
+	[Fact]
+	public async Task AsyncDispose_SingletonSyncDisposableOnly_FallsBackToSyncDispose()
+	{
+		var sp = Build(i => i.Add<IAlpha, DisposableAlpha>(Lifecycle.Singleton));
+		var instance = (DisposableAlpha)sp.GetService(typeof(IAlpha))!;
+
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.True(instance.Disposed);
+	}
+
+	[Fact]
+	public async Task AsyncDispose_DualDisposable_PrefersAsyncPath()
+	{
+		var sp = Build(i => i.Add<IAlpha, DualDisposableAlpha>(Lifecycle.Singleton));
+		var instance = (DualDisposableAlpha)sp.GetService(typeof(IAlpha))!;
+
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.True(instance.AsyncDisposed);
+		Assert.False(instance.SyncDisposed);
+	}
+
+	[Fact]
+	public async Task AsyncDispose_InstanceRegistration_IsNotDisposed()
+	{
+		var alpha = new DualDisposableAlpha();
+		var sp = Build(i => i.Add<IAlpha>(alpha));
+
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.False(alpha.AsyncDisposed);
+		Assert.False(alpha.SyncDisposed);
+	}
+
+	[Fact]
+	public async Task GetService_AfterAsyncDispose_ThrowsObjectDisposed()
+	{
+		var sp = new Inverter().Build();
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.Throws<ObjectDisposedException>(() => sp.GetService(typeof(IAlpha)));
 	}
 }

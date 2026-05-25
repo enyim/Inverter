@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 
 using X = System.Linq.Expressions.Expression;
 
@@ -79,7 +80,7 @@ public class Inverter
 		registrations[typeof(TFunc)] = new OpenArgFuncRegistration<TImplementation, TFunc>(lifecycle);
 	}
 
-	private class ServiceProviderImpl : IServiceProvider, IDisposable
+	private class ServiceProviderImpl : IServiceProvider, IDisposable, IAsyncDisposable
 	{
 		private readonly Dictionary<Type, Registration> registrations;
 		private bool disposed;
@@ -106,12 +107,26 @@ public class Inverter
 		{
 			if (disposed) return;
 			disposed = true;
+
 			foreach (var reg in registrations.Values)
+			{
 				reg.Dispose();
+			}
+		}
+
+		public async ValueTask DisposeAsync()
+		{
+			if (disposed) return;
+			disposed = true;
+
+			foreach (var reg in registrations.Values)
+			{
+				await reg.DisposeAsync();
+			}
 		}
 	}
 
-	private abstract class Registration : IDisposable
+	private abstract class Registration : IDisposable, IAsyncDisposable
 	{
 		protected readonly Lifecycle lifecycle;
 		private volatile object? cachedInstance;
@@ -124,10 +139,35 @@ public class Inverter
 
 		public virtual void Dispose()
 		{
+			object? instance;
 			lock (singletonLock)
 			{
-				(cachedInstance as IDisposable)?.Dispose();
+				instance = cachedInstance;
+				if (instance is IAsyncDisposable)
+					throw new InvalidOperationException($"instance of {instance.GetType()} implements {nameof(IAsyncDisposable)} please use {nameof(IAsyncDisposable.DisposeAsync)}");
+
 				cachedInstance = null;
+			}
+
+			(instance as IDisposable)?.Dispose();
+		}
+
+		public virtual async ValueTask DisposeAsync()
+		{
+			object? instance;
+			lock (singletonLock)
+			{
+				instance = cachedInstance;
+				cachedInstance = null;
+			}
+
+			if (instance is IAsyncDisposable ad)
+			{
+				await ad.DisposeAsync();
+			}
+			else
+			{
+				(instance as IDisposable)?.Dispose();
 			}
 		}
 
@@ -187,6 +227,7 @@ public class Inverter
 		protected override object CreateInstance(IServiceProvider services) => instance;
 
 		public override void Dispose() { }
+		public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 
 	private class GeneratedRegistration<TService, TImplementation> : DelegateRegistration<TService>
@@ -311,3 +352,23 @@ public class Inverter
 }
 
 public enum Lifecycle { Singleton = 0, Transient = 1 };
+
+public static class SPX
+{
+	extension(IServiceProvider sp)
+	{
+		public T? GetService<T>()
+		{
+			var tmp = sp.GetService(typeof(T));
+
+			return tmp == null ? default : (T)tmp;
+		}
+
+		public T? GetRequiredService<T>()
+		{
+			var tmp = sp.GetService(typeof(T));
+
+			return tmp != null ? (T)tmp: throw new InvalidOperationException($"Service {typeof(T)} is not registered");
+		}
+	}
+}
