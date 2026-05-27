@@ -387,7 +387,7 @@ public static class SPX
 			return tmp == null ? default : (T)tmp;
 		}
 
-		public T? GetRequiredService<T>()
+		public T GetRequiredService<T>()
 		{
 			var tmp = sp.GetService(typeof(T));
 
