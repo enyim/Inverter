@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -14,7 +15,7 @@ public class Inverter : IWiring
 
 	public IServiceProvider Build()
 	{
-		var snapshot = registrations.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
+		var snapshot = registrations.ToFrozenDictionary(kv => kv.Key, kv => kv.Value.Clone());
 		return new ServiceProviderImpl(snapshot);
 	}
 
@@ -82,10 +83,10 @@ public class Inverter : IWiring
 
 	private class ServiceProviderImpl : IServiceProvider, IDisposable, IAsyncDisposable
 	{
-		private readonly Dictionary<Type, Registration> registrations;
+		private readonly FrozenDictionary<Type, Registration> registrations;
 		private bool disposed;
 
-		public ServiceProviderImpl(Dictionary<Type, Registration> registrations)
+		public ServiceProviderImpl(FrozenDictionary<Type, Registration> registrations)
 		{
 			this.registrations = registrations;
 		}
