@@ -247,7 +247,7 @@ public class Inverter : IWiring
 						.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
 														? services
 														: p.IsOptional
-															? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.DefaultValue))
+															? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, p.HasDefaultValue ? X.Constant(p.DefaultValue) : X.Constant(null))
 															: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
 					)
 				), services);
