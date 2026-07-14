@@ -19,6 +19,19 @@ public class Inverter : IWiring
 		return new ServiceProviderImpl(snapshot);
 	}
 
+	public void AddOpenGeneric(Type serviceOpenGeneric, Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient)
+	{
+		ArgumentNullException.ThrowIfNull(serviceOpenGeneric);
+		ArgumentNullException.ThrowIfNull(implementationOpenGeneric);
+
+		if (!serviceOpenGeneric.IsGenericTypeDefinition)
+			throw new ArgumentException($"{serviceOpenGeneric} is not an open generic type definition", nameof(serviceOpenGeneric));
+		if (!implementationOpenGeneric.IsGenericTypeDefinition)
+			throw new ArgumentException($"{implementationOpenGeneric} is not an open generic type definition", nameof(implementationOpenGeneric));
+
+		registrations[serviceOpenGeneric] = new OpenGenericRegistration(implementationOpenGeneric, lifecycle);
+	}
+
 	public void Add<TService>(Func<IServiceProvider, TService> resolver, Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 	{
@@ -84,6 +97,7 @@ public class Inverter : IWiring
 	private class ServiceProviderImpl : IServiceProvider, IDisposable, IAsyncDisposable
 	{
 		private readonly FrozenDictionary<Type, Registration> registrations;
+		private readonly Dictionary<Type, Registration> closedGenericCache = new();
 		private bool disposed;
 
 		public ServiceProviderImpl(FrozenDictionary<Type, Registration> registrations)
@@ -96,9 +110,22 @@ public class Inverter : IWiring
 			ArgumentNullException.ThrowIfNull(serviceType);
 			if (disposed) throw new ObjectDisposedException(nameof(ServiceProviderImpl));
 
-			if (registrations.TryGetValue(serviceType, out var resolver))
+			if (registrations.TryGetValue(serviceType, out var resolver) && resolver is not OpenGenericRegistration)
 			{
 				return resolver.Create(this);
+			}
+
+			if (serviceType.IsConstructedGenericType
+				&& registrations.TryGetValue(serviceType.GetGenericTypeDefinition(), out var openReg)
+				&& openReg is OpenGenericRegistration open)
+			{
+				if (!closedGenericCache.TryGetValue(serviceType, out var registration))
+				{
+					registration = open.BuildClosed(serviceType);
+					closedGenericCache[serviceType] = registration;
+				}
+
+				return registration.Create(this);
 			}
 
 			return null;
@@ -109,7 +136,7 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
-			foreach (var reg in registrations.Values)
+			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values))
 			{
 				reg.Dispose();
 			}
@@ -120,7 +147,7 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
-			foreach (var reg in registrations.Values)
+			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values))
 			{
 				await reg.DisposeAsync();
 			}
@@ -130,8 +157,7 @@ public class Inverter : IWiring
 	private abstract class Registration : IDisposable, IAsyncDisposable
 	{
 		protected readonly Lifecycle lifecycle;
-		private volatile object? cachedInstance;
-		private readonly object singletonLock = new();
+		private object? cachedInstance;
 
 		protected Registration(Lifecycle lifecycle)
 		{
@@ -140,27 +166,19 @@ public class Inverter : IWiring
 
 		public virtual void Dispose()
 		{
-			object? instance;
-			lock (singletonLock)
-			{
-				instance = cachedInstance;
-				if (instance is IAsyncDisposable)
-					throw new InvalidOperationException($"instance of {instance.GetType()} implements {nameof(IAsyncDisposable)} please use {nameof(IAsyncDisposable.DisposeAsync)}");
+			var instance = cachedInstance;
+			if (instance is IAsyncDisposable)
+				throw new InvalidOperationException($"instance of {instance.GetType()} implements {nameof(IAsyncDisposable)} please use {nameof(IAsyncDisposable.DisposeAsync)}");
 
-				cachedInstance = null;
-			}
+			cachedInstance = null;
 
 			(instance as IDisposable)?.Dispose();
 		}
 
 		public virtual async ValueTask DisposeAsync()
 		{
-			object? instance;
-			lock (singletonLock)
-			{
-				instance = cachedInstance;
-				cachedInstance = null;
-			}
+			var instance = cachedInstance;
+			cachedInstance = null;
 
 			if (instance is IAsyncDisposable ad)
 			{
@@ -181,14 +199,7 @@ public class Inverter : IWiring
 			if (lifecycle == Lifecycle.Transient)
 				return CreateInstance(services); // TODO track IDisposables (?)
 
-			if (cachedInstance is not null)
-				return cachedInstance;
-
-			lock (singletonLock)
-			{
-				cachedInstance ??= CreateInstance(services);
-				return cachedInstance;
-			}
+			return cachedInstance ??= CreateInstance(services);
 		}
 	}
 
@@ -231,28 +242,58 @@ public class Inverter : IWiring
 		public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 
+	private sealed class OpenGenericRegistration : Registration
+	{
+		private readonly Type implType;
+
+		public OpenGenericRegistration(Type implType, Lifecycle lifecycle) : base(lifecycle)
+		{
+			this.implType = implType;
+		}
+
+		public override Registration Clone() => new OpenGenericRegistration(implType, lifecycle);
+
+		public Registration BuildClosed(Type constructedType) =>
+			new DelegateRegistration<object>(GeneratedRegistration.BuildFactory(implType.MakeGenericType(constructedType.GenericTypeArguments)), lifecycle);
+
+		protected override object CreateInstance(IServiceProvider services) =>
+			throw new NotSupportedException("open generic registration is a template and cannot be resolved directly");
+	}
+
+	private static class GeneratedRegistration
+	{
+		public static Func<IServiceProvider, object> BuildFactory(Type implType)
+		{
+			var ctor = implType.GetConstructors().MaxBy(c => c.GetParameters().Length) ?? throw new InvalidOperationException($"{implType} has no accessible constructor");
+			var services = X.Parameter(typeof(IServiceProvider), "services");
+
+			var lambda = X.Lambda<Func<IServiceProvider, object>>(
+				X.Convert(
+					X.New(
+						ctor,
+						ctor.GetParameters()
+							.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
+															? services
+															: p.IsOptional
+																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, p.HasDefaultValue ? X.Constant(p.DefaultValue) : X.Constant(null))
+																: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
+						)
+					),
+					typeof(object)),
+				services);
+
+			return lambda.Compile();
+		}
+	}
+
 	private class GeneratedRegistration<TService, TImplementation> : DelegateRegistration<TService>
 		where TService : class
 		where TImplementation : class
 	{
 		private static Func<IServiceProvider, TService> GetFactory()
 		{
-			var ctor = typeof(TImplementation).GetConstructors().MaxBy(c => c.GetParameters().Length) ?? throw new InvalidOperationException($"{typeof(TImplementation)} has no accessible constructor");
-			var services = X.Parameter(typeof(IServiceProvider), "services");
-
-			var lambda = X.Lambda<Func<IServiceProvider, TService>>(
-				X.New(
-					ctor,
-					ctor.GetParameters()
-						.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
-														? services
-														: p.IsOptional
-															? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, p.HasDefaultValue ? X.Constant(p.DefaultValue) : X.Constant(null))
-															: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
-					)
-				), services);
-
-			return lambda.Compile();
+			var factory = GeneratedRegistration.BuildFactory(typeof(TImplementation));
+			return services => (TService)factory(services);
 		}
 
 		public override Registration Clone() => new GeneratedRegistration<TService, TImplementation>(lifecycle);
@@ -360,6 +401,7 @@ public interface IWiring
 	void Add<TService>(Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
 	void Add<TService>(Func<IServiceProvider, TService> resolver, Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
 	void Add<TService>(TService instance) where TService : class;
+	void AddOpenGeneric(Type serviceOpenGeneric, Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient);
 	void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
@@ -391,7 +433,7 @@ public static class SPX
 		{
 			var tmp = sp.GetService(typeof(T));
 
-			return tmp != null ? (T)tmp: throw new InvalidOperationException($"Service {typeof(T)} is not registered");
+			return tmp != null ? (T)tmp : throw new InvalidOperationException($"Service {typeof(T)} is not registered");
 		}
 	}
 }

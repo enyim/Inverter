@@ -60,6 +60,22 @@ public class InverterTests
 		public TwoArgAlpha(int id, string name) { Id = id; Name = name; }
 	}
 
+	interface IRepository<T> { }
+
+	class Repository<T> : IRepository<T> { }
+
+	class DisposableRepository<T> : IRepository<T>, IDisposable
+	{
+		public bool Disposed { get; private set; }
+		public void Dispose() => Disposed = true;
+	}
+
+	class AsyncDisposableRepository<T> : IRepository<T>, IAsyncDisposable
+	{
+		public bool Disposed { get; private set; }
+		public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+	}
+
 	static IServiceProvider Build(Action<Inverter> configure)
 	{
 		var inv = new Inverter();
@@ -296,5 +312,56 @@ public class InverterTests
 		await ((IAsyncDisposable)sp).DisposeAsync();
 
 		Assert.Throws<ObjectDisposedException>(() => sp.GetService(typeof(IAlpha)));
+	}
+
+	[Fact]
+	public void OpenGeneric_Transient_ResolvesClosedTypeAndIsDistinctPerCall()
+	{
+		var sp = Build(i => i.AddOpenGeneric(typeof(IRepository<>), typeof(Repository<>)));
+
+		var first = Assert.IsType<Repository<Alpha>>(sp.GetService(typeof(IRepository<Alpha>)));
+		var second = Assert.IsType<Repository<Alpha>>(sp.GetService(typeof(IRepository<Alpha>)));
+		Assert.NotSame(first, second);
+
+		Assert.IsType<Repository<Beta>>(sp.GetService(typeof(IRepository<Beta>)));
+	}
+
+	[Fact]
+	public void OpenGeneric_Singleton_ReturnsSameInstancePerConstructedType()
+	{
+		var sp = Build(i => i.AddOpenGeneric(typeof(IRepository<>), typeof(Repository<>), Lifecycle.Singleton));
+
+		Assert.Same(sp.GetService(typeof(IRepository<Alpha>)), sp.GetService(typeof(IRepository<Alpha>)));
+		Assert.NotSame(sp.GetService(typeof(IRepository<Alpha>)), sp.GetService(typeof(IRepository<Beta>)));
+	}
+
+	[Fact]
+	public void OpenGeneric_BareDefinition_ResolvesToNull()
+	{
+		var sp = Build(i => i.AddOpenGeneric(typeof(IRepository<>), typeof(Repository<>)));
+
+		Assert.Null(sp.GetService(typeof(IRepository<>)));
+	}
+
+	[Fact]
+	public void Dispose_SingletonOpenGeneric_IsDisposed()
+	{
+		var sp = Build(i => i.AddOpenGeneric(typeof(IRepository<>), typeof(DisposableRepository<>), Lifecycle.Singleton));
+		var instance = (DisposableRepository<Alpha>)sp.GetService(typeof(IRepository<Alpha>))!;
+
+		((IDisposable)sp).Dispose();
+
+		Assert.True(instance.Disposed);
+	}
+
+	[Fact]
+	public async Task AsyncDispose_SingletonOpenGeneric_IsDisposed()
+	{
+		var sp = Build(i => i.AddOpenGeneric(typeof(IRepository<>), typeof(AsyncDisposableRepository<>), Lifecycle.Singleton));
+		var instance = (AsyncDisposableRepository<Alpha>)sp.GetService(typeof(IRepository<Alpha>))!;
+
+		await ((IAsyncDisposable)sp).DisposeAsync();
+
+		Assert.True(instance.Disposed);
 	}
 }
