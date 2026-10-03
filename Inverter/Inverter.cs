@@ -3,6 +3,7 @@ using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
 using X = System.Linq.Expressions.Expression;
@@ -120,7 +121,7 @@ public class Inverter : IWiring
 			if (Find(serviceType) is { } list)
 				return list[^1].Create(this);
 
-			if (serviceType.IsGenericType && serviceType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+			if (serviceType.IsConstructedGenericType && serviceType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
 			{
 				var elementType = serviceType.GetGenericArguments()[0];
 				if (Find(elementType) is { } elementList)
@@ -162,8 +163,15 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
+			List<Exception>? errors = null;
+
 			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values).SelectMany(l => l))
-				reg.Dispose();
+			{
+				try { reg.Dispose(); }
+				catch (Exception e) { (errors ??= []).Add(e); }
+			}
+
+			ThrowIfAny(errors);
 		}
 
 		public async ValueTask DisposeAsync()
@@ -171,8 +179,23 @@ public class Inverter : IWiring
 			if (disposed) return;
 			disposed = true;
 
+			List<Exception>? errors = null;
+
 			foreach (var reg in registrations.Values.Concat(closedGenericCache.Values).SelectMany(l => l))
-				await reg.DisposeAsync();
+			{
+				try { await reg.DisposeAsync(); }
+				catch (Exception e) { (errors ??= []).Add(e); }
+			}
+
+			ThrowIfAny(errors);
+		}
+
+		private static void ThrowIfAny(List<Exception>? errors)
+		{
+			if (errors is null) return;
+			if (errors.Count == 1) ExceptionDispatchInfo.Capture(errors[0]).Throw();
+
+			throw new AggregateException(errors);
 		}
 	}
 
@@ -189,12 +212,16 @@ public class Inverter : IWiring
 		public virtual void Dispose()
 		{
 			var instance = cachedInstance;
-			if (instance is IAsyncDisposable)
-				throw new InvalidOperationException($"instance of {instance.GetType()} implements {nameof(IAsyncDisposable)} please use {nameof(IAsyncDisposable.DisposeAsync)}");
-
 			cachedInstance = null;
 
-			(instance as IDisposable)?.Dispose();
+			if (instance is IDisposable d)
+			{
+				d.Dispose();
+			}
+			else if (instance is IAsyncDisposable)
+			{
+				throw new InvalidOperationException($"instance of {instance.GetType()} implements {nameof(IAsyncDisposable)} please use {nameof(IAsyncDisposable.DisposeAsync)}");
+			}
 		}
 
 		public virtual async ValueTask DisposeAsync()
@@ -297,7 +324,7 @@ public class Inverter : IWiring
 							.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
 															? services
 															: p.IsOptional
-																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, p.HasDefaultValue ? X.Constant(p.DefaultValue) : X.Constant(null))
+																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.HasDefaultValue ? p.DefaultValue : null, typeof(object)))
 																: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
 						)
 					),
@@ -372,7 +399,7 @@ public class Inverter : IWiring
 							.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
 															? services
 															: p.IsOptional
-																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.DefaultValue))
+																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.HasDefaultValue ? p.DefaultValue : null, typeof(object)))
 																: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
 						)
 					)
@@ -392,20 +419,19 @@ public class Inverter : IWiring
 		private static MethodInfo GetMethod(string name) => typeof(Helpers).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static) ?? throw new InvalidOperationException($"Cannot find {nameof(Helpers)}.{name}");
 
 		private static TDependency ResolveRequired<TDependency>(IServiceProvider services)
-			where TDependency : class
 		{
-			return services.GetService(typeof(TDependency)) as TDependency
-					?? throw new InvalidOperationException($"Cannot resolve required service {typeof(TDependency)}");
+			return services.GetService(typeof(TDependency)) is TDependency retval
+					? retval
+					: throw new InvalidOperationException($"Cannot resolve required service {typeof(TDependency)}");
 		}
 
 		private static TDependency? ResolveOptional<TDependency>(IServiceProvider services, object? defaultValue)
-			where TDependency : class
 		{
 			var tmp = services.GetService(typeof(TDependency)) ?? defaultValue;
 
 			return tmp switch
 			{
-				null => null,
+				null => default,
 				TDependency retval => retval,
 				_ => throw new InvalidOperationException(
 					$"Optional parameter of type {typeof(TDependency)} has a default value " +

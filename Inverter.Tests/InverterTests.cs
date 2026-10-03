@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 using Enyim;
@@ -74,6 +75,18 @@ public class InverterTests
 	{
 		public bool Disposed { get; private set; }
 		public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+	}
+
+	class AlphaWithOptionalValue : IAlpha
+	{
+		public int Count { get; }
+		public AlphaWithOptionalValue(int count = 7) => Count = count;
+	}
+
+	class BetaWithAlphas : IBeta
+	{
+		public IAlpha[] Alphas { get; }
+		public BetaWithAlphas(IEnumerable<IAlpha> alphas) => Alphas = [.. alphas];
 	}
 
 	static IServiceProvider Build(Action<Inverter> configure)
@@ -177,7 +190,7 @@ public class InverterTests
 	}
 
 	[Fact]
-	public void Add_SecondRegistration_OverwritesFirst()
+	public void Add_SecondRegistration_LatestWins()
 	{
 		var sp = Build(i =>
 		{
@@ -411,5 +424,174 @@ public class InverterTests
 
 		var result = (System.Collections.Generic.IEnumerable<IAlpha>)sp.GetService(typeof(System.Collections.Generic.IEnumerable<IAlpha>))!;
 		Assert.IsType<Alpha>(Assert.Single(result));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_ConstructorParameter_InjectsAll()
+	{
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, Alpha>();
+			i.Add<IAlpha, AlphaWithOptionalValue>();
+			i.Add<IBeta, BetaWithAlphas>();
+		});
+
+		var result = Assert.IsType<BetaWithAlphas>(sp.GetService(typeof(IBeta)));
+		Assert.Collection(result.Alphas,
+			x => Assert.IsType<Alpha>(x),
+			x => Assert.IsType<AlphaWithOptionalValue>(x));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_MultipleInstances_ReturnsAllInOrder()
+	{
+		var first = new Alpha();
+		var second = new Alpha();
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha>(first);
+			i.Add<IAlpha>(second);
+		});
+
+		var result = (IEnumerable<IAlpha>)sp.GetService(typeof(IEnumerable<IAlpha>))!;
+		Assert.Collection(result,
+			x => Assert.Same(first, x),
+			x => Assert.Same(second, x));
+		Assert.Same(second, sp.GetService(typeof(IAlpha)));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_Singleton_SameInstanceAsSingleResolve()
+	{
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, Alpha>(Lifecycle.Singleton);
+			i.Add<IAlpha, AlphaWithOptional>(Lifecycle.Singleton);
+		});
+
+		var single = sp.GetService(typeof(IAlpha));
+		var first = (IAlpha[])sp.GetService(typeof(IEnumerable<IAlpha>))!;
+		var second = (IAlpha[])sp.GetService(typeof(IEnumerable<IAlpha>))!;
+
+		Assert.Same(single, first[1]);
+		Assert.Same(first[0], second[0]);
+		Assert.Same(first[1], second[1]);
+	}
+
+	[Fact]
+	public void ResolveEnumerable_ExplicitRegisteredFirst_StillWins()
+	{
+		var explicit_ = new Alpha();
+		var sp = Build(i =>
+		{
+			i.Add<IEnumerable<IAlpha>>(_ => [explicit_]);
+			i.Add<IAlpha, AlphaWithOptional>();
+		});
+
+		var result = (IEnumerable<IAlpha>)sp.GetService(typeof(IEnumerable<IAlpha>))!;
+		Assert.Same(explicit_, Assert.Single(result));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_TwoExplicitRegistrations_LatestWins()
+	{
+		var first = new Alpha();
+		var second = new Alpha();
+		var sp = Build(i =>
+		{
+			i.Add<IEnumerable<IAlpha>>(_ => [first]);
+			i.Add<IEnumerable<IAlpha>>(_ => [second]);
+		});
+
+		var result = (IEnumerable<IAlpha>)sp.GetService(typeof(IEnumerable<IAlpha>))!;
+		Assert.Same(second, Assert.Single(result));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_RegisteredAfterBuild_NotVisible()
+	{
+		var inverter = new Inverter();
+		inverter.Add<IAlpha, Alpha>();
+		var sp = inverter.Build();
+		inverter.Add<IAlpha, AlphaWithOptional>(); // registered after Build()
+
+		var result = (IEnumerable<IAlpha>)sp.GetService(typeof(IEnumerable<IAlpha>))!;
+		Assert.IsType<Alpha>(Assert.Single(result));
+	}
+
+	[Fact]
+	public void ResolveEnumerable_OpenGenericDefinition_ReturnsNull()
+	{
+		var sp = Build(i => i.Add<IAlpha, Alpha>());
+		Assert.Null(sp.GetService(typeof(IEnumerable<>)));
+	}
+
+	[Fact]
+	public void Dispose_MultipleSingletonRegistrations_AllDisposed()
+	{
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, DisposableAlpha>(Lifecycle.Singleton);
+			i.Add<IAlpha, DisposableAlpha>(Lifecycle.Singleton);
+		});
+		var instances = (IAlpha[])sp.GetService(typeof(IEnumerable<IAlpha>))!;
+
+		((IDisposable)sp).Dispose();
+
+		Assert.NotSame(instances[0], instances[1]);
+		Assert.All(instances, x => Assert.True(((DisposableAlpha)x).Disposed));
+	}
+
+	[Fact]
+	public void Dispose_AsyncOnlySingleton_ThrowsButDisposesTheRest()
+	{
+		var sp = Build(i =>
+		{
+			i.Add<IAlpha, AsyncDisposableAlpha>(Lifecycle.Singleton);
+			i.Add<IAlpha, DisposableAlpha>(Lifecycle.Singleton);
+		});
+		var instances = (IAlpha[])sp.GetService(typeof(IEnumerable<IAlpha>))!;
+
+		Assert.Throws<InvalidOperationException>(() => ((IDisposable)sp).Dispose());
+
+		Assert.False(((AsyncDisposableAlpha)instances[0]).Disposed);
+		Assert.True(((DisposableAlpha)instances[1]).Disposed);
+	}
+
+	[Fact]
+	public void Dispose_DualDisposableSingleton_UsesSyncDispose()
+	{
+		var sp = Build(i => i.Add<IAlpha, DualDisposableAlpha>(Lifecycle.Singleton));
+		var instance = (DualDisposableAlpha)sp.GetService(typeof(IAlpha))!;
+
+		((IDisposable)sp).Dispose();
+
+		Assert.True(instance.SyncDisposed);
+		Assert.False(instance.AsyncDisposed);
+	}
+
+	[Fact]
+	public void Resolve_OptionalValueTypeParameter_UsesDefault()
+	{
+		var sp = Build(i => i.Add<IAlpha, AlphaWithOptionalValue>());
+
+		var result = Assert.IsType<AlphaWithOptionalValue>(sp.GetService(typeof(IAlpha)));
+		Assert.Equal(7, result.Count);
+	}
+
+	[Fact]
+	public void Resolve_RequiredValueTypeParameter_ThrowsInvalidOperation()
+	{
+		var sp = Build(i => i.Add<IAlpha, TwoArgAlpha>()); // registering must not throw
+
+		Assert.Throws<InvalidOperationException>(() => sp.GetService(typeof(IAlpha)));
+	}
+
+	[Fact]
+	public void GetRequiredService_Unregistered_ThrowsInvalidOperation()
+	{
+		var sp = new Inverter().Build();
+
+		Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IAlpha>());
 	}
 }
