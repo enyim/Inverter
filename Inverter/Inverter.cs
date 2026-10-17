@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
@@ -27,7 +29,7 @@ public class Inverter : IWiring
 		return new ServiceProviderImpl(snapshot);
 	}
 
-	public void AddOpenGeneric(Type serviceOpenGeneric, Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient)
+	public void AddOpenGeneric(Type serviceOpenGeneric, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient)
 	{
 		ArgumentNullException.ThrowIfNull(serviceOpenGeneric);
 		ArgumentNullException.ThrowIfNull(implementationOpenGeneric);
@@ -48,14 +50,14 @@ public class Inverter : IWiring
 		Register(typeof(TService), new DelegateRegistration<TService>(resolver, lifecycle));
 	}
 
-	public void Add<TService, TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void Add<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
 		Register(typeof(TService), new GeneratedRegistration<TService, TImplementation>(lifecycle));
 	}
 
-	public void Add<TService>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void Add<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 	{
 		Add<TService, TService>(lifecycle);
@@ -69,35 +71,35 @@ public class Inverter : IWiring
 		Register(typeof(TService), new InstanceRegistration<TService>(instance));
 	}
 
-	public void AutoWire<TService, TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
 		AutoWire<TImplementation, Func<TArg1, TService>>(lifecycle);
 	}
 
-	public void AutoWire<TService, TImplementation, TArg1, TArg2>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
 		AutoWire<TImplementation, Func<TArg1, TArg2, TService>>(lifecycle);
 	}
 
-	public void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2, TArg3>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
 		AutoWire<TImplementation, Func<TArg1, TArg2, TArg3, TService>>(lifecycle);
 	}
 
-	public void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
+	public void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService
 	{
 		AutoWire<TImplementation, Func<TArg1, TArg2, TArg3, TArg4, TService>>(lifecycle);
 	}
 
-	private void AutoWire<TImplementation, TFunc>(Lifecycle lifecycle)
+	private void AutoWire<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TFunc>(Lifecycle lifecycle)
 	{
 		Register(typeof(TFunc), new OpenArgFuncRegistration<TImplementation, TFunc>(lifecycle));
 	}
@@ -124,17 +126,24 @@ public class Inverter : IWiring
 			if (serviceType.IsConstructedGenericType && serviceType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
 			{
 				var elementType = serviceType.GetGenericArguments()[0];
-				if (Find(elementType) is { } elementList)
-				{
-					var array = Array.CreateInstance(elementType, elementList.Count);
-					for (var i = 0; i < elementList.Count; i++)
-						array.SetValue(elementList[i].Create(this), i);
-					return array;
-				}
-				return Array.CreateInstance(elementType, 0);
+				var elementList = Find(elementType);
+				var array = CreateArray(elementType, elementList?.Count ?? 0);
+
+				for (var i = 0; i < array.Length; i++)
+					array.SetValue(elementList![i].Create(this), i);
+
+				return array;
 			}
 
 			return null;
+		}
+
+		[UnconditionalSuppressMessage("AOT", "IL3050", Justification = "arrays of reference types use shared code, value types are rejected by ThrowIfNeedsDynamicCode")]
+		private static Array CreateArray(Type elementType, int length)
+		{
+			Helpers.ThrowIfNeedsDynamicCode(elementType);
+
+			return Array.CreateInstance(elementType, length);
 		}
 
 		// exact registrations win over the ones closed from an open generic
@@ -293,17 +302,25 @@ public class Inverter : IWiring
 
 	private sealed class OpenGenericRegistration : Registration
 	{
+		[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
 		private readonly Type implType;
 
-		public OpenGenericRegistration(Type implType, Lifecycle lifecycle) : base(lifecycle)
+		public OpenGenericRegistration([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implType, Lifecycle lifecycle) : base(lifecycle)
 		{
 			this.implType = implType;
 		}
 
 		public override Registration Clone() => new OpenGenericRegistration(implType, lifecycle);
 
-		public Registration BuildClosed(Type constructedType) =>
-			new DelegateRegistration<object>(GeneratedRegistration.BuildFactory(implType.MakeGenericType(constructedType.GenericTypeArguments)), lifecycle);
+		[UnconditionalSuppressMessage("Trimming", "IL2055", Justification = "the constructors of the open generic are preserved, and closed generics share them")]
+		[UnconditionalSuppressMessage("AOT", "IL3050", Justification = "reference type arguments use shared code, value types are rejected by ThrowIfNeedsDynamicCode")]
+		public Registration BuildClosed(Type constructedType)
+		{
+			var args = constructedType.GenericTypeArguments;
+			Helpers.ThrowIfNeedsDynamicCode(args);
+
+			return new DelegateRegistration<object>(GeneratedRegistration.BuildFactory(implType.MakeGenericType(args)), lifecycle);
+		}
 
 		protected override object CreateInstance(IServiceProvider services) =>
 			throw new NotSupportedException("open generic registration is a template and cannot be resolved directly");
@@ -311,7 +328,7 @@ public class Inverter : IWiring
 
 	private static class GeneratedRegistration
 	{
-		public static Func<IServiceProvider, object> BuildFactory(Type implType)
+		public static Func<IServiceProvider, object> BuildFactory([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implType)
 		{
 			var ctor = implType.GetConstructors().MaxBy(c => c.GetParameters().Length) ?? throw new InvalidOperationException($"{implType} has no accessible constructor");
 			var services = X.Parameter(typeof(IServiceProvider), "services");
@@ -321,12 +338,7 @@ public class Inverter : IWiring
 					X.New(
 						ctor,
 						ctor.GetParameters()
-							.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
-															? services
-															: p.IsOptional
-																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.HasDefaultValue ? p.DefaultValue : null, typeof(object)))
-																: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
-						)
+							.Select(p => Helpers.Resolve(p, services))
 					),
 					typeof(object)),
 				services);
@@ -335,7 +347,7 @@ public class Inverter : IWiring
 		}
 	}
 
-	private class GeneratedRegistration<TService, TImplementation> : DelegateRegistration<TService>
+	private class GeneratedRegistration<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation> : DelegateRegistration<TService>
 		where TService : class
 		where TImplementation : class
 	{
@@ -350,7 +362,7 @@ public class Inverter : IWiring
 		public GeneratedRegistration(Lifecycle lifecycle) : base(GetFactory(), lifecycle) { }
 	}
 
-	private class OpenArgFuncRegistration<TImplementation, TFactory> : Registration
+	private class OpenArgFuncRegistration<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TFactory> : Registration
 	{
 		private readonly Func<IServiceProvider, TFactory> func;
 
@@ -366,14 +378,14 @@ public class Inverter : IWiring
 
 	private static class FuncFactory
 	{
-		public static Func<IServiceProvider, TFactory> GetFactory<TImplementation, TFactory>()
+		public static Func<IServiceProvider, TFactory> GetFactory<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TFactory>()
 		{
 			var funcType = typeof(TFactory);
 			if (!funcType.IsGenericType) throw new InvalidOperationException();
 
 			var funcArgs = funcType.GetGenericArguments();
 			if (funcArgs.Length < 2) throw new InvalidOperationException("Func must have at least one argument");
-			if (X.GetFuncType(funcArgs) != funcType) throw new InvalidOperationException($"{typeof(TFactory)} must be System.Func<>");
+			if (Array.IndexOf(Helpers.FuncTypes, funcType.GetGenericTypeDefinition()) < 0) throw new InvalidOperationException($"{typeof(TFactory)} must be System.Func<>");
 
 			// last arg is return type, rest are input params
 			var returnType = funcArgs[^1];
@@ -396,12 +408,7 @@ public class Inverter : IWiring
 					constParams.Concat(
 						ctor.GetParameters()
 							.Skip(constParams.Length)
-							.Select<ParameterInfo, X>(p => (p.ParameterType == typeof(IServiceProvider))
-															? services
-															: p.IsOptional
-																? X.Call(Helpers.ResolveOptionalMethod.MakeGenericMethod(p.ParameterType), services, X.Constant(p.HasDefaultValue ? p.DefaultValue : null, typeof(object)))
-																: X.Call(Helpers.ResolveRequiredMethod.MakeGenericMethod(p.ParameterType), services)
-						)
+							.Select(p => Helpers.Resolve(p, services))
 					)
 				), constParams);
 
@@ -413,53 +420,82 @@ public class Inverter : IWiring
 
 	private static class Helpers
 	{
-		public static readonly MethodInfo ResolveRequiredMethod = GetMethod(nameof(Helpers.ResolveRequired));
-		public static readonly MethodInfo ResolveOptionalMethod = GetMethod(nameof(Helpers.ResolveOptional));
+		public static readonly Type[] FuncTypes = [typeof(Func<,>), typeof(Func<,,>), typeof(Func<,,,>), typeof(Func<,,,,>), typeof(Func<,,,,,>)];
+
+		private static readonly MethodInfo ResolveRequiredMethod = GetMethod(nameof(Helpers.ResolveRequired));
+		private static readonly MethodInfo ResolveOptionalMethod = GetMethod(nameof(Helpers.ResolveOptional));
 
 		private static MethodInfo GetMethod(string name) => typeof(Helpers).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static) ?? throw new InvalidOperationException($"Cannot find {nameof(Helpers)}.{name}");
 
-		private static TDependency ResolveRequired<TDependency>(IServiceProvider services)
+		// the resolvers are not generic (MakeGenericMethod is not AOT safe), the cast is done by the expression
+		public static X Resolve(ParameterInfo p, X services)
 		{
-			return services.GetService(typeof(TDependency)) is TDependency retval
-					? retval
-					: throw new InvalidOperationException($"Cannot resolve required service {typeof(TDependency)}");
+			var type = p.ParameterType;
+			if (type == typeof(IServiceProvider)) return services;
+
+			if (!p.IsOptional)
+				return X.Convert(X.Call(ResolveRequiredMethod, services, X.Constant(type)), type);
+
+			// null must become default(T), so that optional value types work too
+			var tmp = X.Variable(typeof(object), "tmp");
+
+			return X.Block(
+				type,
+				[tmp],
+				X.Assign(tmp, X.Call(ResolveOptionalMethod, services, X.Constant(type), X.Constant(p.HasDefaultValue ? p.DefaultValue : null, typeof(object)))),
+				X.Condition(X.Equal(tmp, X.Constant(null)), X.Default(type), X.Convert(tmp, type)));
 		}
 
-		private static TDependency? ResolveOptional<TDependency>(IServiceProvider services, object? defaultValue)
+		private static object ResolveRequired(IServiceProvider services, Type type)
 		{
-			var tmp = services.GetService(typeof(TDependency)) ?? defaultValue;
+			return services.GetService(type) is { } retval && type.IsInstanceOfType(retval)
+					? retval
+					: throw new InvalidOperationException($"Cannot resolve required service {type}");
+		}
 
-			return tmp switch
+		private static object? ResolveOptional(IServiceProvider services, Type type, object? defaultValue)
+		{
+			var tmp = services.GetService(type) ?? defaultValue;
+
+			return tmp == null || type.IsInstanceOfType(tmp)
+					? tmp
+					: throw new InvalidOperationException(
+						$"Optional parameter of type {type} has a default value " +
+						$"of type {tmp.GetType()} which cannot be used as {type}");
+		}
+
+		public static void ThrowIfNeedsDynamicCode(params Type[] types)
+		{
+			if (RuntimeFeature.IsDynamicCodeSupported) return;
+
+			foreach (var type in types)
 			{
-				null => default,
-				TDependency retval => retval,
-				_ => throw new InvalidOperationException(
-					$"Optional parameter of type {typeof(TDependency)} has a default value " +
-					$"of type {tmp!.GetType()} which cannot be used as {typeof(TDependency)}")
-			};
+				if (type.IsValueType)
+					throw new NotSupportedException($"{type} is a value type, and cannot be used as a generic argument without dynamic code (native AOT)");
+			}
 		}
 	}
 }
 
 public interface IWiring
 {
-	void Add<TService, TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
+	void Add<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
-	void Add<TService>(Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
+	void Add<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService>(Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
 	void Add<TService>(Func<IServiceProvider, TService> resolver, Lifecycle lifecycle = Lifecycle.Transient) where TService : class;
 	void Add<TService>(TService instance) where TService : class;
-	void AddOpenGeneric(Type serviceOpenGeneric, Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient);
-	void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
+	void AddOpenGeneric(Type serviceOpenGeneric, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implementationOpenGeneric, Lifecycle lifecycle = Lifecycle.Transient);
+	void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2, TArg3, TArg4>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
-	void AutoWire<TService, TImplementation, TArg1, TArg2, TArg3>(Lifecycle lifecycle = Lifecycle.Transient)
+	void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2, TArg3>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
-	void AutoWire<TService, TImplementation, TArg1, TArg2>(Lifecycle lifecycle = Lifecycle.Transient)
+	void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1, TArg2>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
-	void AutoWire<TService, TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
+	void AutoWire<TService, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation, TArg1>(Lifecycle lifecycle = Lifecycle.Transient)
 		where TService : class
 		where TImplementation : class, TService;
 }
