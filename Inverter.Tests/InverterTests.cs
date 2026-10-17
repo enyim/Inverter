@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -8,38 +8,38 @@ using Xunit;
 
 public class InverterTests
 {
-	interface IAlpha { }
-	interface IBeta { }
+	internal interface IAlpha { }
+	internal interface IBeta { }
 
-	class Alpha : IAlpha { }
-	class Beta : IBeta { }
+	internal class Alpha : IAlpha { }
+	internal class Beta : IBeta { }
 
-	class AlphaWithRequired : IAlpha
+	internal class AlphaWithRequired : IAlpha
 	{
 		public IBeta Dep { get; }
 		public AlphaWithRequired(IBeta dep) => Dep = dep;
 	}
 
-	class AlphaWithOptional : IAlpha
+	internal class AlphaWithOptional : IAlpha
 	{
 		public IBeta? Dep { get; }
 		public string Tag { get; }
 		public AlphaWithOptional(IBeta? dep = null, string tag = "default") { Dep = dep; Tag = tag; }
 	}
 
-	class DisposableAlpha : IAlpha, IDisposable
+	internal class DisposableAlpha : IAlpha, IDisposable
 	{
 		public bool Disposed { get; private set; }
 		public void Dispose() => Disposed = true;
 	}
 
-	class AsyncDisposableAlpha : IAlpha, IAsyncDisposable
+	internal class AsyncDisposableAlpha : IAlpha, IAsyncDisposable
 	{
 		public bool Disposed { get; private set; }
 		public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
 	}
 
-	class DualDisposableAlpha : IAlpha, IDisposable, IAsyncDisposable
+	internal class DualDisposableAlpha : IAlpha, IDisposable, IAsyncDisposable
 	{
 		public bool SyncDisposed { get; private set; }
 		public bool AsyncDisposed { get; private set; }
@@ -47,43 +47,43 @@ public class InverterTests
 		public ValueTask DisposeAsync() { AsyncDisposed = true; return ValueTask.CompletedTask; }
 	}
 
-	class FactoryAlpha : IAlpha
+	internal class FactoryAlpha : IAlpha
 	{
 		public int Id { get; }
 		public IBeta Dep { get; }
 		public FactoryAlpha(int id, IBeta dep) { Id = id; Dep = dep; }
 	}
 
-	class TwoArgAlpha : IAlpha
+	internal class TwoArgAlpha : IAlpha
 	{
 		public int Id { get; }
 		public string Name { get; }
 		public TwoArgAlpha(int id, string name) { Id = id; Name = name; }
 	}
 
-	interface IRepository<T> { }
+	internal interface IRepository<T> { }
 
-	class Repository<T> : IRepository<T> { }
+	internal class Repository<T> : IRepository<T> { }
 
-	class DisposableRepository<T> : IRepository<T>, IDisposable
+	internal class DisposableRepository<T> : IRepository<T>, IDisposable
 	{
 		public bool Disposed { get; private set; }
 		public void Dispose() => Disposed = true;
 	}
 
-	class AsyncDisposableRepository<T> : IRepository<T>, IAsyncDisposable
+	internal class AsyncDisposableRepository<T> : IRepository<T>, IAsyncDisposable
 	{
 		public bool Disposed { get; private set; }
 		public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
 	}
 
-	class AlphaWithOptionalValue : IAlpha
+	internal class AlphaWithOptionalValue : IAlpha
 	{
 		public int Count { get; }
 		public AlphaWithOptionalValue(int count = 7) => Count = count;
 	}
 
-	class BetaWithAlphas : IBeta
+	internal class BetaWithAlphas : IBeta
 	{
 		public IAlpha[] Alphas { get; }
 		public BetaWithAlphas(IEnumerable<IAlpha> alphas) => Alphas = [.. alphas];
@@ -593,5 +593,57 @@ public class InverterTests
 		var sp = new Inverter().Build();
 
 		Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IAlpha>());
+	}
+
+	// a generic call site has no concrete type for the generator, so these use the reflection path
+	static void AddViaReflection<TService, TImplementation>(Inverter inverter, Lifecycle lifecycle = Lifecycle.Transient)
+		where TService : class
+		where TImplementation : class, TService
+		=> inverter.Add<TService, TImplementation>(lifecycle);
+
+	static void AutoWireViaReflection<TService, TImplementation, TArg1>(Inverter inverter)
+		where TService : class
+		where TImplementation : class, TService
+		=> inverter.AutoWire<TService, TImplementation, TArg1>();
+
+	[Fact]
+	public void Reflection_RequiredAndOptionalDependencies_AreResolved()
+	{
+		var sp = Build(i =>
+		{
+			AddViaReflection<IBeta, Beta>(i);
+			AddViaReflection<IAlpha, AlphaWithRequired>(i);
+			AddViaReflection<IAlpha, AlphaWithOptional>(i);
+			AddViaReflection<IAlpha, AlphaWithOptionalValue>(i);
+		});
+
+		var all = Assert.IsType<IAlpha[]>(sp.GetService(typeof(IEnumerable<IAlpha>)));
+
+		Assert.IsType<Beta>(Assert.IsType<AlphaWithRequired>(all[0]).Dep);
+		Assert.Equal("default", Assert.IsType<AlphaWithOptional>(all[1]).Tag);
+		Assert.Equal(7, Assert.IsType<AlphaWithOptionalValue>(all[2]).Count);
+	}
+
+	[Fact]
+	public void Reflection_Singleton_ReturnsSameInstance()
+	{
+		var sp = Build(i => AddViaReflection<IAlpha, Alpha>(i, Lifecycle.Singleton));
+
+		Assert.Same(sp.GetService(typeof(IAlpha)), sp.GetService(typeof(IAlpha)));
+	}
+
+	[Fact]
+	public void Reflection_AutoWire_PassesArgumentAndResolvesRest()
+	{
+		var sp = Build(i =>
+		{
+			AddViaReflection<IBeta, Beta>(i);
+			AutoWireViaReflection<IAlpha, FactoryAlpha, int>(i);
+		});
+
+		var result = Assert.IsType<FactoryAlpha>(sp.GetRequiredService<Func<int, IAlpha>>()(42));
+
+		Assert.Equal(42, result.Id);
+		Assert.IsType<Beta>(result.Dep);
 	}
 }
